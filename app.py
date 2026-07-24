@@ -282,9 +282,12 @@ def _wrap_lesson_html(
     html = html.replace(
         '../RESOURCES.md', f'/ws/{topic_name}/RESOURCES.md'
     )
-    # Also rewrite ../lessons/ links (cross-references between lessons)
-    html = html.replace(
-        '../lessons/', f'/{topic_name}/lessons/'
+    # Also rewrite ../lessons/ links (cross-references between lessons).
+    # Strip the filename suffix — only the numeric order is needed.
+    html = re.sub(
+        r'\.\./lessons/(\d+)[^"\' )]*',
+        rf'/{topic_name}/lessons/\g<1>',
+        html,
     )
 
     # ── Injection 2: portal styles ─────────────────────────────────────────
