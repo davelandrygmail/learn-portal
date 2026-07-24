@@ -289,6 +289,12 @@ def _wrap_lesson_html(
         rf'/{topic_name}/lessons/\g<1>',
         html,
     )
+    # Also rewrite same-directory lesson links like 0002-foo.html → /topic/lessons/2
+    html = re.sub(
+        r'(href=["\']?)(\d+)-[^"\' )]*\.html',
+        rf'\g<1>/{topic_name}/lessons/\g<2>',
+        html,
+    )
 
     # ── Injection 2: portal styles ─────────────────────────────────────────
     html = html.replace("</head>", f"{_PORTAL_STYLES}\n</head>")
