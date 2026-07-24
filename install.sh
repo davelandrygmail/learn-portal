@@ -3,13 +3,13 @@
 # One-shot setup for learn-portal.
 #
 #   1. Installs Python dependencies (via uv or pip)
-#   2. Creates a systemd user service on port 6666
+#   2. Creates a systemd user service on port 7777
 #   3. Enables and starts the service
 #
 # Usage:
 #   chmod +x install.sh && ./install.sh
 #
-# After running, open http://YOUR_SERVER_IP:6666 in your browser.
+# After running, open http://YOUR_SERVER_IP:7777 in your browser.
 # ────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -48,9 +48,9 @@ SERVICE_FILE="$SERVICE_DIR/learn-portal.service"
 
 # Resolve absolute path for the uv/python binary to bake into the unit file.
 if [ -n "$UV" ]; then
-    EXEC_CMD="$UV run uvicorn app:app --host 0.0.0.0 --port 6666"
+    EXEC_CMD="$UV run uvicorn app:app --host 0.0.0.0 --port 7777"
 else
-    EXEC_CMD="uvicorn app:app --host 0.0.0.0 --port 6666"
+    EXEC_CMD="uvicorn app:app --host 0.0.0.0 --port 7777"
 fi
 
 info "Creating systemd user service…"
@@ -94,8 +94,8 @@ fi
 echo ""
 echo -e "\\033[1;32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m"
 echo -e "\\033[1;32m  ✅  Learn Portal is live!\\033[0m"
-echo -e "\\033[1;32m  📍  http://localhost:6666\\033[0m"
-echo -e "\\033[1;32m  📍  http://$(hostname -I 2>/dev/null | awk '{print $1}'):6666\\033[0m"
+echo -e "\\033[1;32m  📍  http://localhost:7777\\033[0m"
+echo -e "\\033[1;32m  📍  http://$(hostname -I 2>/dev/null | awk '{print $1}'):7777\\033[0m"
 echo -e "\\033[1;32m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m"
 echo ""
 echo "Manage:  systemctl --user [start|stop|restart|status] learn-portal.service"

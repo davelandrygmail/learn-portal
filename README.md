@@ -60,8 +60,8 @@ chmod +x install.sh
 ./install.sh
 
 # 3. Open in your browser
-#    Local:    http://localhost:6666
-#    Network:  http://<server-ip>:6666
+#    Local:    http://localhost:7777
+#    Network:  http://<server-ip>:7777
 ```
 
 ## Manual Start (without systemd)
@@ -72,7 +72,7 @@ uv pip install -r requirements.txt
 # or: pip install -r requirements.txt
 
 # Run the server
-uv run uvicorn app:app --host 0.0.0.0 --port 6666
+uv run uvicorn app:app --host 0.0.0.0 --port 7777
 ```
 
 ## Routes
