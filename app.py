@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import jinja2
+import markdown as md_lib
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -346,14 +347,72 @@ async def lesson_view(request: Request, topic_name: str, lesson_order: int):
     return HTMLResponse(content=html)
 
 
+_MD_REF_STYLES = """
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f0f1a; color: #e0e0e0;
+    max-width: 800px; margin: 0 auto; padding: 24px;
+    line-height: 1.7;
+}
+a { color: #7bb3ff; }
+h1, h2, h3 { color: #fff; }
+h1 { font-size: 1.8rem; border-bottom: 1px solid #2a2a4a; padding-bottom: 8px; }
+h2 { font-size: 1.3rem; margin-top: 28px; }
+h3 { font-size: 1.1rem; margin-top: 20px; }
+code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; }
+pre { background: #1a1a2e; padding: 16px; border-radius: 8px; overflow-x: auto; }
+hr { border: none; border-top: 1px solid #2a2a4a; margin: 24px 0; }
+blockquote { border-left: 3px solid #7bb3ff; margin: 16px 0; padding: 8px 16px; background: #1a1a2e; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+th, td { border: 1px solid #2a2a4a; padding: 8px 12px; text-align: left; }
+th { background: #1a1a2e; color: #fff; }
+.lp-back { margin-bottom: 20px; }
+.lp-back a { color: #7bb3ff; text-decoration: none; font-size: .92rem; }
+.lp-back a:hover { text-decoration: underline; }
+</style>
+"""
+
+
+def _is_markdown(content: str) -> bool:
+    """Heuristic: file is Markdown (not HTML) if it has no HTML structure tags."""
+    return not bool(re.search(r"<(!DOCTYPE|html|head|body|div\s)", content, re.IGNORECASE))
+
+
+def _render_markdown_ref(file_path: Path, topic_name: str, title: str) -> str:
+    """Convert a Markdown reference file to a wrapped HTML page."""
+    raw = file_path.read_text(encoding="utf-8")
+    body_html = md_lib.markdown(raw, extensions=["fenced_code", "tables"])
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8">
+<title>{title} — {topic_name}</title>
+{_MD_REF_STYLES}
+</head>
+<body>
+<div class="lp-back"><a href="/{topic_name}/">← Back to {topic_name}</a></div>
+{body_html}
+</body>
+</html>"""
+
+
 @app.get("/{topic_name}/reference/{filename}")
 async def reference_view(topic_name: str, filename: str):
-    """Serve a reference document as-is (no wrapping)."""
+    """Serve a reference document.
+
+    Detects Markdown files (created by /teach with .html extension but
+    containing Markdown) and renders them as styled HTML.  Real HTML files
+    are served as-is.
+    """
     ref_path = WORKSPACE_ROOT / topic_name / "reference" / filename
     if not ref_path.is_file():
         return HTMLResponse(
             "<h1>Reference not found</h1>", status_code=404
         )
+    content = ref_path.read_text(encoding="utf-8")
+    if _is_markdown(content):
+        title = filename.replace(".html", "").replace("-", " ").title()
+        return HTMLResponse(_render_markdown_ref(ref_path, topic_name, title))
     return FileResponse(str(ref_path))
 
 
