@@ -88,14 +88,27 @@ def _parse_mission_title(content: str) -> str:
 
 
 def _parse_mission_preview(content: str) -> str:
-    """First non-heading, non-blockquote sentence (≤200 chars)."""
+    """First meaningful sentence from MISSION.md (≤200 chars).
+
+    Skips YAML frontmatter, headings, and blockquote labels like
+    ``**Purpose** –`` to find actual descriptive content.
+    """
     for line in content.splitlines():
         line = line.strip()
-        if line and not line.startswith("#") and not line.startswith("---"):
-            # Strip blockquote markers
-            clean = re.sub(r"^>\s*", "", line).strip()
-            if clean:
-                return clean[:200] + ("…" if len(clean) > 200 else "")
+        if not line:
+            continue
+        # Skip YAML frontmatter and headings
+        if line.startswith("---") or line.startswith("#"):
+            continue
+        # Strip blockquote markers
+        clean = re.sub(r"^>\s*", "", line).strip()
+        if not clean:
+            continue
+        # Skip bold label lines (e.g. **Purpose** –, **Goals** –)
+        if re.match(r"\*\*.+\*\*\s*[–\-]?\s*$", clean):
+            continue
+        # This is real content
+        return clean[:200] + ("…" if len(clean) > 200 else "")
     return ""
 
 
