@@ -263,9 +263,29 @@ def _wrap_lesson_html(
         f'</nav>'
     )
 
-    # ── Injection 1: <base> tag ────────────────────────────────────────────
-    base_tag = f'<base href="/ws/{topic_name}/lessons/">'
-    html = html.replace("<head>", f"<head>\n    {base_tag}", 1)
+    # ── Injection 1: rewrite relative asset & reference paths ──────────────
+    # Instead of a <base> tag (which hijacks ALL relative URLs), surgically
+    # rewrite only the paths we know the lesson uses:
+    #   ../assets/...  →  /ws/{topic}/assets/...   (CSS, images)
+    #   ../reference/... → /{topic}/reference/...  (portal route w/ rendering)
+    #   ../MISSION.md  →  /ws/{topic}/MISSION.md   (raw file)
+    #   ../RESOURCES.md → /ws/{topic}/RESOURCES.md
+    html = html.replace(
+        '../assets/', f'/ws/{topic_name}/assets/'
+    )
+    html = html.replace(
+        '../reference/', f'/{topic_name}/reference/'
+    )
+    html = html.replace(
+        '../MISSION.md', f'/ws/{topic_name}/MISSION.md'
+    )
+    html = html.replace(
+        '../RESOURCES.md', f'/ws/{topic_name}/RESOURCES.md'
+    )
+    # Also rewrite ../lessons/ links (cross-references between lessons)
+    html = html.replace(
+        '../lessons/', f'/{topic_name}/lessons/'
+    )
 
     # ── Injection 2: portal styles ─────────────────────────────────────────
     html = html.replace("</head>", f"{_PORTAL_STYLES}\n</head>")
