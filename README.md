@@ -21,7 +21,7 @@ external services, just the filesystem.
 
 ## How It Works
 
-- **Discover** — on every request the app scans `/mnt/data/Workspace/*/MISSION.md`
+- **Discover** — on every request the app scans `/mnt/data/Workspace/Learning/*/MISSION.md`
   to find teaching workspaces (directories created by the `/teach` skill).
 - **Index** — the home page shows every workspace as a card with lesson count
   and the latest lesson title.
@@ -118,6 +118,6 @@ systemctl --user disable learn-portal.service
 
 ## Adding a New Workspace
 
-Just create a new subdirectory in `/mnt/data/Workspace/` with a `MISSION.md`
-and `lessons/` directory using the `/teach` skill. The portal picks it up
-automatically on the next page load.
+Just create a new subdirectory in `/mnt/data/Workspace/Learning/` with a
+`MISSION.md` and `lessons/` directory using the `/teach` skill. The portal
+picks it up automatically on the next page load.

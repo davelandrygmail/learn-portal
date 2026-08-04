@@ -1,12 +1,12 @@
 """
 learn-portal — Web viewer for /teach workspaces.
 
-Scans /mnt/data/Workspace for teaching workspaces (directories with MISSION.md),
-lists them on a clean home page, and serves wrapped lesson views with
-navigation chrome (breadcrumbs + prev/next arrows).
+Scans /mnt/data/Workspace/Learning for teaching workspaces (directories with
+MISSION.md), lists them on a clean home page, and serves wrapped lesson views
+with navigation chrome (breadcrumbs + prev/next arrows).
 
-Static workspace files (CSS, images) are served under /ws/ so that the
-<base> tag in wrapped lessons resolves relative URLs correctly.
+Static workspace files (CSS, images) are served under /ws/ so relative asset
+URLs in wrapped lessons resolve correctly.
 """
 
 import os
@@ -23,6 +23,8 @@ from fastapi.staticfiles import StaticFiles
 # ── Paths ──────────────────────────────────────────────────────────────────
 
 WORKSPACE_ROOT = Path("/mnt/data/Workspace")
+# All /teach workspaces live under the shared Learning directory.
+LEARNING_DIR = WORKSPACE_ROOT / "Learning"
 PORTAL_DIR = WORKSPACE_ROOT / "learn-portal"
 
 app = FastAPI(title="Learn Portal")
@@ -45,9 +47,9 @@ def _render(name: str, **context) -> str:
     template = _jinja_env.get_template(name)
     return template.render(**context)
 
-# Mount workspace files so <base> tags in wrapped lessons resolve.
+# Mount workspace files so rewritten asset URLs resolve.
 # e.g. a lesson referencing ../assets/style.css resolves to
-# /ws/{topic}/assets/style.css
+# /ws/Learning/{topic}/assets/style.css
 app.mount("/ws", StaticFiles(directory=str(WORKSPACE_ROOT)), name="workspace")
 
 
@@ -114,10 +116,10 @@ def _parse_mission_preview(content: str) -> str:
 
 
 def _discover_workspaces() -> list[dict]:
-    """Scan WORKSPACE_ROOT for subdirectories containing a MISSION.md."""
+    """Scan LEARNING_DIR for subdirectories containing a MISSION.md."""
     workspaces: list[dict] = []
 
-    for d in sorted(WORKSPACE_ROOT.iterdir()):
+    for d in sorted(LEARNING_DIR.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
 
@@ -266,21 +268,22 @@ def _wrap_lesson_html(
     # ── Injection 1: rewrite relative asset & reference paths ──────────────
     # Instead of a <base> tag (which hijacks ALL relative URLs), surgically
     # rewrite only the paths we know the lesson uses:
-    #   ../assets/...  →  /ws/{topic}/assets/...   (CSS, images)
+    #   ../assets/...  →  /ws/Learning/{topic}/assets/...   (CSS, images)
     #   ../reference/... → /{topic}/reference/...  (portal route w/ rendering)
-    #   ../MISSION.md  →  /ws/{topic}/MISSION.md   (raw file)
-    #   ../RESOURCES.md → /ws/{topic}/RESOURCES.md
+    #   ../MISSION.md  →  /ws/Learning/{topic}/MISSION.md   (raw file)
+    #   ../RESOURCES.md → /ws/Learning/{topic}/RESOURCES.md
+    ws_prefix = f'/ws/Learning/{topic_name}'
     html = html.replace(
-        '../assets/', f'/ws/{topic_name}/assets/'
+        '../assets/', f'{ws_prefix}/assets/'
     )
     html = html.replace(
         '../reference/', f'/{topic_name}/reference/'
     )
     html = html.replace(
-        '../MISSION.md', f'/ws/{topic_name}/MISSION.md'
+        '../MISSION.md', f'{ws_prefix}/MISSION.md'
     )
     html = html.replace(
-        '../RESOURCES.md', f'/ws/{topic_name}/RESOURCES.md'
+        '../RESOURCES.md', f'{ws_prefix}/RESOURCES.md'
     )
     # Also rewrite ../lessons/ links (cross-references between lessons).
     # Strip the filename suffix — only the numeric order is needed.
@@ -433,7 +436,7 @@ async def reference_view(topic_name: str, filename: str):
     containing Markdown) and renders them as styled HTML.  Real HTML files
     are served as-is.
     """
-    ref_path = WORKSPACE_ROOT / topic_name / "reference" / filename
+    ref_path = LEARNING_DIR / topic_name / "reference" / filename
     if not ref_path.is_file():
         return HTMLResponse(
             "<h1>Reference not found</h1>", status_code=404
