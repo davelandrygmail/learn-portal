@@ -46,12 +46,10 @@ ok "Dependencies installed"
 SERVICE_DIR="$HOME/.config/systemd/user"
 SERVICE_FILE="$SERVICE_DIR/learn-portal.service"
 
-# Resolve absolute path for the uv/python binary to bake into the unit file.
-if [ -n "$UV" ]; then
-    EXEC_CMD="$UV run uvicorn app:app --host 0.0.0.0 --port 7777"
-else
-    EXEC_CMD="uvicorn app:app --host 0.0.0.0 --port 7777"
-fi
+# Resolve absolute path for the venv uvicorn binary to bake into the unit file.
+# Pointing straight at the venv binary avoids `uv run` project-discovery
+# fragility when the portal has no pyproject.toml (requirements.txt only).
+EXEC_CMD="$SCRIPT_DIR/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 7777"
 
 info "Creating systemd user service…"
 mkdir -p "$SERVICE_DIR"

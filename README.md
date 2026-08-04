@@ -71,8 +71,8 @@ chmod +x install.sh
 uv pip install -r requirements.txt
 # or: pip install -r requirements.txt
 
-# Run the server
-uv run uvicorn app:app --host 0.0.0.0 --port 7777
+# Run the server (uses the project venv created by install.sh / pip)
+.venv/bin/uvicorn app:app --host 0.0.0.0 --port 7777
 ```
 
 ## Routes
