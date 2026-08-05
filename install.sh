@@ -30,15 +30,39 @@ info()  { echo -e "\\033[1;34m•\\033[0m $*"; }
 ok()    { echo -e "\\033[1;32m✓\\033[0m $*"; }
 err()   { echo -e "\\033[1;31m✗\\033[0m $*" >&2; }
 
-# ── Step 1: Install Python dependencies ────────────────────────────────────
+# ── Step 1: Create a venv and install Python dependencies ─────────────────
+# A dedicated .venv is created up front so the systemd unit (which execs
+# .venv/bin/uvicorn) is guaranteed a real binary to point at, regardless of
+# what env `pip`/`uv` would otherwise install into.
+info "Creating virtual environment (.venv)…"
+
+VENV_DIR="$SCRIPT_DIR/.venv"
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    if [ -n "$UV" ]; then
+        "$UV" venv --quiet "$VENV_DIR"
+    elif command -v python3 &>/dev/null; then
+        python3 -m venv "$VENV_DIR"
+    else
+        err "No uv or python3 available to create a virtual environment."
+        exit 1
+    fi
+else
+    info "Existing .venv detected (reusing)."
+fi
+ok "Virtual environment ready"
+
 info "Installing Python dependencies…"
 
 if [ -n "$UV" ]; then
-    info "Using \`$UV\` (recommended)"
-    "$UV" pip install --quiet -r "$SCRIPT_DIR/requirements.txt"
+    # uv venv creates a pip-less env; install into it via uv pip directly.
+    "$UV" pip install --quiet --python "$VENV_DIR/bin/python" \
+        -r "$SCRIPT_DIR/requirements.txt"
+elif [ -x "$VENV_DIR/bin/python" ]; then
+    # python3 -m venv bundles pip; install into the venv explicitly.
+    "$VENV_DIR/bin/python" -m pip install --quiet -r "$SCRIPT_DIR/requirements.txt"
 else
-    info "Using \`pip\` (consider installing uv for faster installs)"
-    pip3 install --quiet --user -r "$SCRIPT_DIR/requirements.txt"
+    err "No venv python binary found; aborting."
+    exit 1
 fi
 ok "Dependencies installed"
 

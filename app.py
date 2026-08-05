@@ -24,13 +24,26 @@ from fastapi.staticfiles import StaticFiles
 from fastapi import WebSocket, WebSocketDisconnect
 
 # ── Paths ──────────────────────────────────────────────────────────────────
+#
+# All on-disk locations are configurable via environment variables so the
+# portal is portable beyond this machine. The defaults match the original
+# author's setup; override LP_WORKSPACE_ROOT / LP_HERMES_HOME to point at a
+# different workspace or Hermes home without editing source.
 
-WORKSPACE_ROOT = Path("/mnt/data/Workspace")
+WORKSPACE_ROOT = Path(os.environ.get("LP_WORKSPACE_ROOT", "/mnt/data/Workspace"))
 # All /teach workspaces live under the shared Learning directory.
-LEARNING_DIR = WORKSPACE_ROOT / "Learning"
+# LP_LEARNING_DIR lets you point at an arbitrary workspace root (instead of
+# the "<root>/Learning" convention) if your workspaces live elsewhere.
+LEARNING_DIR = Path(
+    os.environ.get("LP_LEARNING_DIR", str(WORKSPACE_ROOT / "Learning"))
+)
 # Project dir derived from this file's location so the app keeps working
 # regardless of where the repo lives on disk.
 PORTAL_DIR = Path(__file__).resolve().parent
+
+# Hermes config/auth home (used by _hermes_env for spawned subprocesses).
+HERMES_HOME = os.environ.get("LP_HERMES_HOME", "/home/hermes-agent/.hermes")
+HERMES_REAL_HOME = os.environ.get("LP_HERMES_REAL_HOME", "/home/hermes-agent")
 
 app = FastAPI(title="Learn Portal")
 
@@ -544,8 +557,11 @@ async def reference_view(topic_name: str, filename: str):
     containing Markdown) and renders them as styled HTML.  Real HTML files
     are served as-is.
     """
-    ref_path = LEARNING_DIR / topic_name / "reference" / filename
-    if not ref_path.is_file():
+    if not _is_valid_topic(topic_name):
+        return HTMLResponse("<h1>Reference not found</h1>", status_code=404)
+    ref_root = LEARNING_DIR / topic_name / "reference"
+    ref_path = _safe_resolve(ref_root, filename)
+    if ref_path is None or not ref_path.is_file():
         return HTMLResponse(
             "<h1>Reference not found</h1>", status_code=404
         )
@@ -588,9 +604,11 @@ async def health():
 # errors with "Session not found" on a fresh topic. We therefore never pass a
 # made-up id; we always resolve a real one (or none, for the first turn).
 
-# Path to the hermes CLI (resolved once at import).
+# Path to the hermes CLI (resolved once at import). LP_HERMES_BIN overrides;
+# otherwise fall back to PATH lookup, then a common install location.
 _HERMES_BIN = (
-    __import__("shutil").which("hermes")
+    os.environ.get("LP_HERMES_BIN")
+    or __import__("shutil").which("hermes")
     or "/home/hermes-agent/.local/bin/hermes"
 )
 
@@ -600,16 +618,32 @@ def _is_valid_topic(topic_name: str) -> bool:
     """Topic must be a single path-safe segment mapping to an existing dir."""
     if not topic_name or topic_name in {".", ".."}:
         return False
-    if re.search(r"[/\\]", topic_name):
+    if re.search(r"[/\\\\]", topic_name):
         return False
     return (LEARNING_DIR / topic_name).is_dir()
+
+
+def _safe_resolve(base: Path, *parts: str) -> Optional[Path]:
+    """Resolve ``base / *parts`` and guarantee the result stays under ``base``.
+
+    Rejects any ``..`` / path-separator tricks that could escape the base
+    directory. Returns None when the resolved path is not a strict descendant
+    of ``base``. This is a defense-in-depth guard in addition to the URL
+    normalization FastAPI/Starlette already applies.
+    """
+    candidate = base.joinpath(*parts).resolve()
+    try:
+        candidate.relative_to(base.resolve())
+    except ValueError:
+        return None
+    return candidate
 
 
 def _teach_bootstrap(topic_name: str) -> str:
     """The directive prepended to the first message in a fresh session."""
     return (
         "You are in a /teach learning session for the topic at "
-        f"/mnt/data/Workspace/Learning/{topic_name}/. "
+        f"{LEARNING_DIR / topic_name}/. "
         "Follow the teach skill: consult MISSION.md and the learning-records "
         "to understand what this learner already knows, ground your teaching "
         "in that workspace (do not invent files elsewhere), and work within "
@@ -673,10 +707,11 @@ def _hermes_env():
     env = dict(os.environ)
     env.setdefault("HOME", str(Path.home()))
     # Hermes resolves its auth.json / config.yaml and custom providers from
-    # HERMES_HOME. Pin it so the subprocess authenticates as Dave, not as an
-    # anonymous process that 9Router treats as its `openai` provider.
-    env.setdefault("HERMES_HOME", "/home/hermes-agent/.hermes")
-    env.setdefault("HERMES_REAL_HOME", "/home/hermes-agent")
+    # HERMES_HOME. Pin it from the (env-overridable) constant so the subprocess
+    # authenticates as the operator, not as an anonymous process that 9Router
+    # treats as its `openai` provider.
+    env.setdefault("HERMES_HOME", HERMES_HOME)
+    env.setdefault("HERMES_REAL_HOME", HERMES_REAL_HOME)
     return env
 
 

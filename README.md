@@ -57,12 +57,14 @@ Two layers, and **both are required** for a fully working install:
   gateway named `9Router` exposing the `Deepseek` combo). Without a reachable
   model, lesson *browsing* still works, but the Ask pane can't answer.
 
-> **Hardcoded paths.** The repo assumes workspaces live under
-> `/mnt/data/Workspace/Learning` and, for the Ask feature, that the Hermes
-> home is `/home/hermes-agent/.hermes`. Both are set in `app.py`
-> (`WORKSPACE_ROOT`, `LEARNING_DIR`, `HERMES_HOME` in `_hermes_env`). If your
-> setup differs, adjust those constants. They are quoted verbatim so the
-> spawned `hermes` subprocess authenticates as the same user the portal runs as.
+> **Configurable paths.** The repo defaults to scanning workspaces under
+> `/mnt/data/Workspace/Learning` and, for the Ask feature, expects a Hermes
+> home at `/home/hermes-agent/.hermes`. These are read from environment
+> variables (defaults shown in the Configuration table below), so you can point
+> the portal at a different root or Hermes home without editing source. The
+> spawned `hermes` subprocess borrows the same `HERMES_HOME`/`HOME` env the
+> portal runs with, so it authenticates as the same user. Set the vars in the
+> systemd unit (or `app.py` defaults) for a different layout.
 
 ---
 
@@ -207,8 +209,11 @@ uv pip install -r requirements.txt
 | Knob | Default | Meaning |
 |---|---|---|
 | `LP_TEACH_TIMEOUT` (env) | `240` | Seconds a `hermes chat` turn may run before it's killed and reported as timed out. |
-| `WORKSPACE_ROOT` / `LEARNING_DIR` (app.py) | `/mnt/data/Workspace` / `.../Learning` | Where `/teach` workspaces live. |
-| `HERMES_HOME` / `HERMES_REAL_HOME` (in `_hermes_env`) | `/home/hermes-agent/.hermes` | Hermes config/auth home for the spawned subprocess. |
+| `LP_WORKSPACE_ROOT` (env) | `/mnt/data/Workspace` | Root of the workspace tree; the portal mounts it at `/ws`. |
+| `LP_LEARNING_DIR` (env) | `$LP_WORKSPACE_ROOT/Learning` | Directory containing the `/teach` workspaces. |
+| `LP_HERMES_HOME` (env) | `/home/hermes-agent/.hermes` | Hermes config/auth home passed to each spawned `hermes` subprocess. |
+| `LP_HERMES_REAL_HOME` (env) | `/home/hermes-agent` | Real home forwarded to the `hermes` subprocess. |
+| `LP_HERMES_BIN` (env) | `which hermes` | Explicit path to the `hermes` CLI; falls back to `PATH`, then `/home/hermes-agent/.local/bin/hermes`. |
 
 ## File Structure
 
