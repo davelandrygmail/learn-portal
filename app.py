@@ -572,26 +572,32 @@ async def health():
 # A WebSocket endpoint that proxies a browser chat pane to a topic-scoped,
 # stateful Hermes session. Each user message runs:
 #
-#     hermes chat --resume <topic-session> --skills teach -q "<message>"
+#     hermes chat [--resume <session-id>] --skills teach -q "<message>"
 #
 # with the working directory set to the topic's workspace
-# (Learning/<topic>/). `--resume` keys off a stable, topic-derived session id,
-# so the conversation accumulates history in ~/.hermes/state.db and survives
-# portal restarts. The first message in a topic seeds the session with a
-# /teach continuation directive so the model is grounded in MISSIOn.md.
+# (Learning/<topic>/). State is kept by Hermes' own session DB: the first
+# message in a topic starts a fresh session (no --resume, so it creates one),
+# and later messages resume it by the real session ID discovered via
+# `hermes sessions list --workspace <topic>`. Because the session's recorded
+# working directory is the topic dir, this survives portal restarts.
+#
+# The first message in a topic seeds the session with a /teach continuation
+# directive so the model is grounded in that topic's MISSION.md.
+#
+# Important: `--resume <name>` ONLY resumes an already-existing session — it
+# errors with "Session not found" on a fresh topic. We therefore never pass a
+# made-up id; we always resolve a real one (or none, for the first turn).
 
-# Session id prefix so these don't collide with CLI sessions.
-_SESSION_PREFIX = "learnportal-teach"
+# Path to the hermes CLI (resolved once at import).
+_HERMES_BIN = (
+    __import__("shutil").which("hermes")
+    or "/home/hermes-agent/.local/bin/hermes"
+)
 
-# Slugs a topic name into something safe to use as a Hermes session id.
-def _topic_session_id(topic_name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]", "-", topic_name)
-    return f"{_SESSION_PREFIX}-{slug}"
-
+# ── helpers ──────────────────────────────────────────────────────────────────
 
 def _is_valid_topic(topic_name: str) -> bool:
     """Topic must be a single path-safe segment mapping to an existing dir."""
-    # Guard against path traversal / absolute paths.
     if not topic_name or topic_name in {".", ".."}:
         return False
     if re.search(r"[/\\]", topic_name):
@@ -612,8 +618,74 @@ def _teach_bootstrap(topic_name: str) -> str:
     )
 
 
+def _existing_session_id(topic_name: str) -> Optional[str]:
+    """Return the Hermes session ID for a topic, or None if none exists yet.
+
+    Deterministic discovery via the `hermes sessions list` filter on the
+    topic's workspace directory — no dependence on chat stdout formatting.
+    The newest matching session is used (rows are newest-first).
+    """
+    topic_dir = LEARNING_DIR / topic_name
+    cmd = [
+        _HERMES_BIN, "sessions", "list",
+        "--workspace", str(topic_dir),
+        "--limit", "5",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=_hermes_env(),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    head = (proc.stdout or "") + (proc.stderr or "")
+    for line in head.splitlines():
+        # Session rows look like:
+        #   Title   Workspace        Last Active   ID
+        #   —       Learn-portal     8m ago        20260805_132001_9dbba0
+        match = re.search(r"(\d{8}_\d{6}_[a-f0-9]{6})\b", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _hermes_env():
+    """Environment for spawned hermes processes.
+
+    Pass through the current environment (which carries HERMES_HOME, PATH, and
+    the 9Router key via .env), and make sure HOME persists so ~/.hermes/state.db
+    resolves correctly.
+    """
+    env = dict(os.environ)
+    env.setdefault("HOME", str(Path.home()))
+    return env
+
+
+def _build_teach_cmd(
+    topic_name: str, message: str, *, seed: bool, session_id: Optional[str]
+) -> list[str]:
+    """Assemble the hermes chat command for one turn."""
+    cmd = [_HERMES_BIN, "chat"]
+    if session_id:
+        # Resume an existing session by its real ID.
+        cmd += ["--resume", session_id]
+    cmd += ["--skills", "teach"]
+    if session_id:
+        # We already set cwd below; don't let hermes cd into the recorded
+        # workspace (which is the same dir anyway, but be explicit/safe).
+        cmd += ["--no-restore-cwd"]
+    prompt = message
+    if seed:
+        prompt = f"{_teach_bootstrap(topic_name)}\n\n{message}"
+    cmd += ["-q", prompt]
+    return cmd
+
+
 async def _run_teach(
-    topic_name: str, message: str, *, is_first: bool
+    topic_name: str, message: str, *, seed: bool, session_id: Optional[str]
 ) -> tuple[int, str]:
     """Run one hermes chat invocation for the topic.
 
@@ -622,20 +694,8 @@ async def _run_teach(
     default timeouts apply and stream nothing back here — the WebSocket handler
     streams chunk-by-chunk instead.
     """
-    session_id = _topic_session_id(topic_name)
     workdir = LEARNING_DIR / topic_name
-
-    prompt = message
-    if is_first:
-        prompt = f"{_teach_bootstrap(topic_name)}\n\n{message}"
-
-    cmd = [
-        "/home/hermes-agent/.local/bin/hermes",
-        "chat",
-        "--resume", session_id,
-        "--skills", "teach",
-        "-q", prompt,
-    ]
+    cmd = _build_teach_cmd(topic_name, message, seed=seed, session_id=session_id)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -655,37 +715,22 @@ async def _run_teach(
     return proc.returncode or 0, "".join(out)
 
 
-def _hermes_env():
-    """Environment for spawned hermes processes.
-
-    Pass through the current environment (which carries HERMES_HOME, PATH, and
-    the 9Router key via .env), and make sure HOME persists so ~/.hermes/state.db
-    resolves correctly.
-    """
-    import os as _os
-
-    env = dict(_os.environ)
-    env.setdefault("HOME", str(Path.home()))
-    return env
-
-
 @app.websocket("/chat/{topic_name}")
 async def chat_ws(websocket: WebSocket, topic_name: str):
     """Bidirectionally proxy the /teach session for `topic_name`.
 
     Browser sends user messages; we relay streamed assistant output back as
-    deltas. A fresh topic session is seeded on the first message.
+    deltas. A fresh topic session is created (seeded with /teach) on the first
+    message; later messages resume it.
     """
     if not _is_valid_topic(topic_name):
         await websocket.close(code=4404)  # custom: topic not found
         return
 
     await websocket.accept()
-    first = True
     try:
         while True:
             data = await websocket.receive_text()
-            # Simple JSON envelope: {"message": "..."}
             import json as _json
 
             try:
@@ -693,15 +738,16 @@ async def chat_ws(websocket: WebSocket, topic_name: str):
             except Exception:
                 msg = data
             if not msg or not msg.strip():
-                await websocket.send_text(
-                    _json.dumps({"error": "Empty message"})
-                )
+                await websocket.send_text(_json.dumps({"error": "Empty message"}))
                 continue
 
             await websocket.send_text(_json.dumps({"status": "thinking"}))
 
-            code, full = await _run_teach(topic_name, msg.strip(), is_first=first)
-            first = False
+            # Resolve (or don't) the topic's session right now.
+            sid = _existing_session_id(topic_name)
+            code, full = await _run_teach(
+                topic_name, msg.strip(), seed=not bool(sid), session_id=sid
+            )
 
             if code == 0 and full.strip():
                 await websocket.send_text(
