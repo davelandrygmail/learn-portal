@@ -9,20 +9,6 @@ stopped.
 
 No database. No external services. Just the filesystem and your Hermes CLI.
 
-```
-┌─────────────────────────────────────────────────────┐
-│  📚 Learn Portal                                    │
-│                                                     │
-│  ┌──────────────────┐  ┌──────────────────────────┐ │
-│  │  🖨️ Resin 3D     │  │  🏗️ SAFe Learning       │ │
-│  │  Printing        │  │  1 lesson · 1 reference  │ │
-│  │  1 lesson        │  │  Latest: RTE Role &      │ │
-│  │  Latest: Intro   │  │  Mindset                 │ │
-│  │  to Resin 3D...  │  │                          │ │
-│  └──────────────────┘  └──────────────────────────┘ │
-└─────────────────────────────────────────────────────┘
-```
-
 ## Screenshots
 
 ### Home — every learning workspace as a card
@@ -148,11 +134,11 @@ self-healing (a hung turn dies at the timeout instead of blocking the server).
 ```
 Browser  ── HTTP ───────────▶  FastAPI (app.py)  ──reads fs──▶  /mnt/data/Workspace/Learning/{topic}/
   │                                │                                          ├─ MISSION.md
-  │                                │ scan/discover/index                       ├─ lessons/N-title.html
+  │                                │ scan/discover/index                      ├─ lessons/N-title.html
   │                                │                                          └─ reference/*.html
   │   lesson.html (wrapped)        │
   │                                │
-  │  ── WebSocket /chat/{topic} ─▶ │
+  │   ─ WebSocket /chat/{topic} ─▶ │
   │                                │   resolves session id
   │                                │   spawns (per message):
   │                                │      hermes chat -Q --resume <id> --skills teach
@@ -166,7 +152,7 @@ Browser  ── HTTP ───────────▶  FastAPI (app.py)  ─
   │                                │          ▼
   │                                │   clean chrome → teaching prose
   │   delta / done                 │
-  │◀──────────────────────────────│
+  │◀───────────────────────────────│
 ```
 
 Key properties:
