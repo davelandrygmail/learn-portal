@@ -27,6 +27,10 @@
   var ws = null;
   var busy = false;
   var open = false;
+  var streamBubble = null;
+  var reconnectTimer = null;
+  var reconnectAttempt = 0;
+  var closing = false;
 
   /* ---- tiny markdown-ish renderer (safe subset) ---- */
   function esc(s) {
@@ -59,6 +63,13 @@
     d.appendChild(b);
     log.appendChild(d);
     log.scrollTop = log.scrollHeight;
+    // Streaming support: successive deltas re-render the same bubble in place.
+    b.text = text || "";
+    b.setText = function (t) {
+      b.text = t || "";
+      b.innerHTML = renderMd(b.text);
+      return b;
+    };
     return b;
   }
 
@@ -85,11 +96,21 @@
     ws.onopen = function () {
       setStatus("Ready — ask about this lesson");
       setBusy(false);
+      reconnectAttempt = 0;
     };
     ws.onclose = function () {
       setStatus("Disconnected");
       setBusy(false);
       ws = null;
+      // If the pane is still open (drop from a service restart / transient
+      // error, not a deliberate close), reconnect with a short backoff so the
+      // learner doesn't have to re-open the pane.
+      if (open && !closing) {
+        var delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 10000);
+        reconnectAttempt++;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, delay);
+      }
     };
     ws.onerror = function () {
       setStatus("Connection error");
@@ -99,20 +120,33 @@
       try { data = JSON.parse(evt.data); } catch (e) { return; }
       if (data.status === "thinking") {
         setStatus("Thinking…", true);
+      } else if (data.done) {
+        setStatus("");
+        setBusy(false);
+        streamBubble = null;
+        if (input) input.focus();
       } else if (data.delta) {
         setStatus("");
-        addMsg("assistant", data.delta);
-        setBusy(false);
-        if (input) input.focus();
+        // Stream successive deltas into ONE assistant bubble so a long reply
+        // grows in place instead of fragmenting into separate bubbles.
+        if (streamBubble) {
+          streamBubble.setText(streamBubble.text + "\n\n" + data.delta);
+        } else {
+          streamBubble = addMsg("assistant", data.delta, true);
+        }
+        if (streamBubble && log) log.scrollTop = log.scrollHeight;
       } else if (data.error) {
         setStatus("");
         addMsg("assistant", "⚠️ " + data.error);
         setBusy(false);
+        streamBubble = null;
       }
     };
   }
 
   function closePane() {
+    closing = true;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (ws) { try { ws.close(); } catch (e) {} ws = null; }
     CHAT.classList.remove("lp-chat-open");
     if (CHAT.setAttribute) CHAT.setAttribute("aria-hidden", "true");
@@ -125,6 +159,7 @@
     document.body.classList.add("lp-chat-open");
     if (toggleBtn) toggleBtn.setAttribute("aria-pressed", "true");
     open = true;
+    closing = false;
     connect();
     if (input) input.focus();
   }

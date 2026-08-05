@@ -696,99 +696,95 @@ def _build_teach_cmd(
     prompt = message
     if seed:
         prompt = f"{_teach_bootstrap(topic_name)}\n\n{message}"
-    cmd += ["-q", prompt]
+    # -Q quiet mode suppresses hermes' banner/spinner/tool previews so the pane
+    # gets plain teaching text (no boxed borders to strip); -q single query.
+    cmd += ["-Q", "-q", prompt]
     return cmd
-
-
-async def _drain(proc: asyncio.subprocess.Process, out: list[str]) -> None:
-    """Read a subprocess's combined stdout+stderr until EOF.
-
-    Separated out of ``_run_teach`` so the whole turn can be bounded by an
-    overall timeout via ``asyncio.wait_for`` — a non-interactive ``-q`` /teach
-    turn can otherwise block forever (e.g. the agent waiting on a clarify or
-    tool prompt with stdin=/dev/null).
-    """
-    assert proc.stdout is not None
-    while True:
-        chunk = await proc.stdout.read(256)
-        if not chunk:
-            break
-        out.append(chunk.decode("utf-8", "replace"))
 
 
 _HERMES_TOP = "╭─ ⚕ Hermes"
 _HERMES_BOT = "╰─"
 
 
-def _clean_hermes_output(raw: str) -> str:
-    """Keep only the assistant's teaching prose from a `hermes chat` capture.
+def _clean_quiet_output(raw: str) -> str:
+    """Strip the small amount of chrome ``hermes chat -Q`` still prints.
 
-    A ``hermes chat -q`` run prints chrome around the actual teaching content:
-    a ``Query: ...`` prefix, ``Initializing agent...``, ``↻ Resumed session``,
-    box-drawing separators, per-tool status/``┊``/git-diff spam, and a trailing
-    ``Resume this session with:`` footer. In the learning pane the learner
-    should see only the Hermes assistant's prose. So we walk the captured text
-    line by line, keep lines *inside* ``╭─ ⚕ Hermes ─╮`` bordered blocks (with
-    the border lines themselves dropped), and discard everything else.
+    In quiet mode Hermes suppresses banner/spinner/tool previews but still emits
+    a ``↻ Resumed session <id> (N user messages, M total messages)`` line and a
+    ``session_id: <id>`` dump ahead of the actual reply. Keep only the teaching
+    prose that follows.
     """
-    in_block = False
+    lines = (raw or "").splitlines()
     out: list[str] = []
-    pending: list[str] = []
-    for line in (raw or "").splitlines():
+    started = False
+    for line in lines:
         s = line.strip()
-        if s.startswith(_HERMES_TOP):
-            in_block = True
-            pending = []
+        if not started:
+            if s.startswith("↻ Resumed session") or s.startswith("session_id:"):
+                continue
+            if not s:
+                continue
+            started = True
+        # Drop box-drawing remnants in case -Q occasionally emits them.
+        if s.startswith(_HERMES_TOP) or ("╯" in s and _HERMES_BOT in s):
             continue
-        if "╯" in s and _HERMES_BOT in s:
-            in_block = False
-            if pending:
-                out.append("\n".join(pending).strip())
-            pending = []
-            continue
-        if in_block:
-            pending.append(line)
-    return "\n\n".join(chunk for chunk in out if chunk).strip()
+        out.append(line)
+    return "\n".join(out).strip()
 
 
-async def _run_teach(
+async def _stream_teach(
     topic_name: str, message: str, *, seed: bool, session_id: Optional[str]
-) -> tuple[int, str]:
-    """Run one hermes chat invocation for the topic.
+):
+    """Run one `hermes chat -Q` turn, yielding the cleaned teaching prose.
 
-    Returns (exit_code, combined_stdout_stderr) once the process finishes.
-    The gate agent/approval config may cause longer runs; we let the portal's
-    default timeouts apply and stream nothing back here — the WebSocket handler
-    streams chunk-by-chunk instead.
+    ``-Q`` quiet mode already suppresses hermes' banner, spinner and tool
+    previews, so the captured output is dense teaching text (plus a leading
+    ``↻ Resumed session`` / ``session_id:`` marker and the trailing ``Resume
+    this session with:`` footer). We drain the run under a bounded timeout,
+    strip that remaining chrome, and yield the reply — either as one block or,
+    if the assistant emits multiple segments, as successive cleaned chunks.
+
+    A bounded timeout kills the child if a turn hangs (e.g. an unresolved
+    clarify wait in non-interactive mode), so the pane never wedges on Thinking.
     """
-    workdir = LEARNING_DIR / topic_name
     cmd = _build_teach_cmd(topic_name, message, seed=seed, session_id=session_id)
-
     proc = await asyncio.create_subprocess_exec(
         *cmd,
-        cwd=str(workdir),
+        cwd=str(LEARNING_DIR / topic_name),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         env=_hermes_env(),
     )
-    out: list[str] = []
     assert proc.stdout is not None
     _RUN_TIMEOUT = float(os.environ.get("LP_TEACH_TIMEOUT", "240"))
+
+    chunks: list[str] = []
     try:
-        await asyncio.wait_for(_drain(proc, out), timeout=_RUN_TIMEOUT)
+        while True:
+            chunk = await asyncio.wait_for(
+                proc.stdout.read(1024), timeout=_RUN_TIMEOUT
+            )
+            if not chunk:
+                break
+            chunks.append(chunk.decode("utf-8", "replace"))
         await asyncio.wait_for(proc.wait(), timeout=10)
     except asyncio.TimeoutError:
-        # The child didn't finish inside the budget. In non-interactive -q mode a
-        # /teach turn can hang forever (e.g. the agent blocks on a clarify/tool
-        # wait with stdin=/dev/null). Kill it so the pane never sits at
-        # "Thinking…" indefinitely — the WS handler turns this into a clear error.
         try:
             proc.kill()
         except ProcessLookupError:
             pass
         await proc.wait()
-        return 124, "".join(out) + "\n[hermes aborted: the turn exceeded the time budget]"
-    return proc.returncode or 0, "".join(out)
+        if chunks:
+            cleaned = _clean_quiet_output("".join(chunks))
+            if cleaned:
+                yield cleaned
+        yield "[hermes aborted: the turn exceeded the time budget]"
+        return
+
+    cleaned = _clean_quiet_output("".join(chunks))
+    if cleaned:
+        yield cleaned
+
 
 
 @app.websocket("/chat/{topic_name}")
@@ -821,18 +817,20 @@ async def chat_ws(websocket: WebSocket, topic_name: str):
 
             # Resolve (or don't) the topic's session right now.
             sid = _existing_session_id(topic_name)
-            code, full = await _run_teach(
+            emitted = False
+            async for block in _stream_teach(
                 topic_name, msg.strip(), seed=not bool(sid), session_id=sid
-            )
+            ):
+                if block:
+                    emitted = True
+                    await websocket.send_text(_json.dumps({"delta": block, "done": False}))
 
-            if code == 0 and full.strip():
+            if not emitted:
                 await websocket.send_text(
-                    _json.dumps({"delta": _clean_hermes_output(full), "done": True})
+                    _json.dumps({"error": "hermes produced no teaching output"})
                 )
             else:
-                await websocket.send_text(
-                    _json.dumps({"error": full.strip() or f"hermes exited {code}"})
-                )
+                await websocket.send_text(_json.dumps({"done": True}))
     except WebSocketDisconnect:
         return
     except Exception as exc:  # noqa: BLE001 — report and close
