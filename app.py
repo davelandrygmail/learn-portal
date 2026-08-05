@@ -614,7 +614,11 @@ def _teach_bootstrap(topic_name: str) -> str:
         "to understand what this learner already knows, ground your teaching "
         "in that workspace (do not invent files elsewhere), and work within "
         "that directory. Continue their learning in their zone of proximal "
-        "development. Here is the learner's next message:"
+        "development. IMPORTANT: this is a non-interactive terminal channel "
+        "(stdin is closed) — do NOT pause to ask the learner a question or "
+        "call the clarify tool; instead make reasonable assumptions from the "
+        "learning-records, teach one focused thing at the right level, and "
+        "invite a correction in your reply. Here is the learner's next message:"
     )
 
 
@@ -655,12 +659,24 @@ def _existing_session_id(topic_name: str) -> Optional[str]:
 def _hermes_env():
     """Environment for spawned hermes processes.
 
-    Pass through the current environment (which carries HERMES_HOME, PATH, and
-    the 9Router key via .env), and make sure HOME persists so ~/.hermes/state.db
-    resolves correctly.
+    The learn-portal systemd service runs with a minimal environment (no
+    HERMES_HOME, no 9ROUTER_API_KEY, no HERMES_REAL_HOME). Those variables are
+    present in Dave's interactive shells and are what let a `hermes chat`
+    subprocess authenticate as the `@custom:9router:Deepseek` combo. Without
+    them, the spawned hermes falls back to an upstream `openai` route, which
+    9Router rejects ("No active credentials for provider: openai").
+
+    We therefore hard-pin the Hermes home and pass the 9Router key through
+    explicitly rather than relying on whatever the systemd unit happens to
+    provide. HOME is forced so ~/.hermes/state.db resolves correctly.
     """
     env = dict(os.environ)
     env.setdefault("HOME", str(Path.home()))
+    # Hermes resolves its auth.json / config.yaml and custom providers from
+    # HERMES_HOME. Pin it so the subprocess authenticates as Dave, not as an
+    # anonymous process that 9Router treats as its `openai` provider.
+    env.setdefault("HERMES_HOME", "/home/hermes-agent/.hermes")
+    env.setdefault("HERMES_REAL_HOME", "/home/hermes-agent")
     return env
 
 
@@ -682,6 +698,22 @@ def _build_teach_cmd(
         prompt = f"{_teach_bootstrap(topic_name)}\n\n{message}"
     cmd += ["-q", prompt]
     return cmd
+
+
+async def _drain(proc: asyncio.subprocess.Process, out: list[str]) -> None:
+    """Read a subprocess's combined stdout+stderr until EOF.
+
+    Separated out of ``_run_teach`` so the whole turn can be bounded by an
+    overall timeout via ``asyncio.wait_for`` — a non-interactive ``-q`` /teach
+    turn can otherwise block forever (e.g. the agent waiting on a clarify or
+    tool prompt with stdin=/dev/null).
+    """
+    assert proc.stdout is not None
+    while True:
+        chunk = await proc.stdout.read(256)
+        if not chunk:
+            break
+        out.append(chunk.decode("utf-8", "replace"))
 
 
 async def _run_teach(
@@ -706,12 +738,21 @@ async def _run_teach(
     )
     out: list[str] = []
     assert proc.stdout is not None
-    while True:
-        chunk = await proc.stdout.read(256)
-        if not chunk:
-            break
-        out.append(chunk.decode("utf-8", "replace"))
-    await proc.wait()
+    _RUN_TIMEOUT = float(os.environ.get("LP_TEACH_TIMEOUT", "240"))
+    try:
+        await asyncio.wait_for(_drain(proc, out), timeout=_RUN_TIMEOUT)
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        # The child didn't finish inside the budget. In non-interactive -q mode a
+        # /teach turn can hang forever (e.g. the agent blocks on a clarify/tool
+        # wait with stdin=/dev/null). Kill it so the pane never sits at
+        # "Thinking…" indefinitely — the WS handler turns this into a clear error.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        return 124, "".join(out) + "\n[hermes aborted: the turn exceeded the time budget]"
     return proc.returncode or 0, "".join(out)
 
 
