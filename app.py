@@ -716,6 +716,41 @@ async def _drain(proc: asyncio.subprocess.Process, out: list[str]) -> None:
         out.append(chunk.decode("utf-8", "replace"))
 
 
+_HERMES_TOP = "╭─ ⚕ Hermes"
+_HERMES_BOT = "╰─"
+
+
+def _clean_hermes_output(raw: str) -> str:
+    """Keep only the assistant's teaching prose from a `hermes chat` capture.
+
+    A ``hermes chat -q`` run prints chrome around the actual teaching content:
+    a ``Query: ...`` prefix, ``Initializing agent...``, ``↻ Resumed session``,
+    box-drawing separators, per-tool status/``┊``/git-diff spam, and a trailing
+    ``Resume this session with:`` footer. In the learning pane the learner
+    should see only the Hermes assistant's prose. So we walk the captured text
+    line by line, keep lines *inside* ``╭─ ⚕ Hermes ─╮`` bordered blocks (with
+    the border lines themselves dropped), and discard everything else.
+    """
+    in_block = False
+    out: list[str] = []
+    pending: list[str] = []
+    for line in (raw or "").splitlines():
+        s = line.strip()
+        if s.startswith(_HERMES_TOP):
+            in_block = True
+            pending = []
+            continue
+        if "╯" in s and _HERMES_BOT in s:
+            in_block = False
+            if pending:
+                out.append("\n".join(pending).strip())
+            pending = []
+            continue
+        if in_block:
+            pending.append(line)
+    return "\n\n".join(chunk for chunk in out if chunk).strip()
+
+
 async def _run_teach(
     topic_name: str, message: str, *, seed: bool, session_id: Optional[str]
 ) -> tuple[int, str]:
@@ -792,7 +827,7 @@ async def chat_ws(websocket: WebSocket, topic_name: str):
 
             if code == 0 and full.strip():
                 await websocket.send_text(
-                    _json.dumps({"delta": full, "done": True})
+                    _json.dumps({"delta": _clean_hermes_output(full), "done": True})
                 )
             else:
                 await websocket.send_text(
