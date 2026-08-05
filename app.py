@@ -25,7 +25,9 @@ from fastapi.staticfiles import StaticFiles
 WORKSPACE_ROOT = Path("/mnt/data/Workspace")
 # All /teach workspaces live under the shared Learning directory.
 LEARNING_DIR = WORKSPACE_ROOT / "Learning"
-PORTAL_DIR = WORKSPACE_ROOT / "learn-portal"
+# Project dir derived from this file's location so the app keeps working
+# regardless of where the repo lives on disk.
+PORTAL_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(title="Learn Portal")
 
