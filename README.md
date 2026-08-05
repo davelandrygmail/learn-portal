@@ -25,13 +25,31 @@ No database. No external services. Just the filesystem and your Hermes CLI.
 
 ## Screenshots
 
-| Home — every workspace as a card | Topic & lesson views | 💬 Ask /teach pane |
-|---|---|---|
-| <img src="docs/screenshots/home.png" width="360" alt="Learn Portal home page"> | <img src="docs/screenshots/topic.png" width="300" alt="Topic landing page"> · <img src="docs/screenshots/lesson.png" width="300" alt="Lesson view"> | <img src="docs/screenshots/ask-pane.png" width="360" alt="Lesson with the Ask/teach pane open"> |
+### Home — every learning workspace as a card
 
-The **💬 Ask** pane (right) is the standout: an always-open chat assistant on every
-lesson that continues the `/teach` conversation inline, backed by a one-shot
-Hermes Agent subprocess returning your workspace's real teaching text.
+![Learn Portal home page](docs/screenshots/home.png)
+
+The portal scans your `/teach` workspaces and lists every topic as a card.
+
+### Topic landing
+
+![Topic landing page](docs/screenshots/topic.png)
+
+Each topic page lists its lessons and reference documents.
+
+### Lesson view
+
+![Lesson view](docs/screenshots/lesson.png)
+
+Lessons are wrapped and served in the browser, ready to read.
+
+### 💬 Ask / teach pane
+
+![Lesson with the Ask/teach pane open](docs/screenshots/ask-pane.png)
+
+The standout feature: an always-open chat assistant that continues your `/teach`
+conversation inline, backed by a one-shot Hermes Agent subprocess returning your
+workspace's real teaching text.
 
 ## Features
 
