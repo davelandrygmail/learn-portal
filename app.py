@@ -9,8 +9,10 @@ Static workspace files (CSS, images) are served under /ws/ so relative asset
 URLs in wrapped lessons resolve correctly.
 """
 
+import asyncio
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +21,7 @@ import markdown as md_lib
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import WebSocket, WebSocketDisconnect
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -53,6 +56,11 @@ def _render(name: str, **context) -> str:
 # e.g. a lesson referencing ../assets/style.css resolves to
 # /ws/Learning/{topic}/assets/style.css
 app.mount("/ws", StaticFiles(directory=str(WORKSPACE_ROOT)), name="workspace")
+
+# Portal's own static assets (e.g. the in-lesson teach chat pane).
+_STATIC_DIR = PORTAL_DIR / "static"
+_STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 # ── Workspace Discovery ────────────────────────────────────────────────────
@@ -213,6 +221,83 @@ _PORTAL_STYLES = """
 .lp-prev, .lp-next { padding: 4px 12px; border-radius: 4px; }
 .lp-prev:hover, .lp-next:hover { background: rgba(255,255,255,0.1); }
 body { margin-top: 0 !important; }
+
+/* ── In-lesson /teach chat pane ─────────────────────────── */
+#lp-teach-btn {
+    background: #2a8a5a; color: #fff; border: none;
+    padding: 4px 14px; border-radius: 6px; cursor: pointer;
+    font-size: 13px; font-weight: 600; margin-left: 16px;
+    transition: background .2s;
+}
+#lp-teach-btn:hover { background: #35a06c; }
+#lp-teach-btn.lp-chat-busy { background: #b8860b; }
+.lp-chat-open #lp-teach-btn { background: #6a2a8a; }
+
+#lp-chat {
+    display: none;
+    position: fixed; left: 0; right: 0; bottom: 0;
+    height: 45vh; z-index: 2000;
+    background: #0f0f1a; color: #e0e0e0;
+    border-top: 2px solid #2a2a4a;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    flex-direction: column;
+    box-shadow: 0 -6px 24px rgba(0,0,0,0.5);
+}
+.lp-chat-open #lp-chat { display: flex; }
+#lp-chat-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 16px; background: #1a1a2e; border-bottom: 1px solid #2a2a4a;
+    font-size: 13px; color: #888; flex: 0 0 auto;
+}
+#lp-chat-close {
+    background: none; border: none; color: #888; cursor: pointer;
+    font-size: 15px; padding: 0 6px;
+}
+#lp-chat-close:hover { color: #fff; }
+#lp-chat-log {
+    flex: 1 1 auto; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+}
+.lp-chat-user, .lp-chat-assistant { display: flex; }
+.lp-chat-user { justify-content: flex-end; }
+.lp-chat-assistant { justify-content: flex-start; }
+.lp-chat-bubble {
+    max-width: 78%; padding: 10px 14px; border-radius: 12px;
+    line-height: 1.55; font-size: 14px; word-wrap: break-word;
+}
+.lp-chat-user .lp-chat-bubble {
+    background: #1f3a63; color: #dbe8ff;
+    border-bottom-right-radius: 3px;
+}
+.lp-chat-assistant .lp-chat-bubble {
+    background: #1a1a2e; color: #e0e0e0;
+    border-bottom-left-radius: 3px;
+}
+.lp-chat-bubble pre {
+    background: #0a0a14; padding: 10px; border-radius: 6px;
+    overflow-x: auto; font-size: 12.5px;
+}
+.lp-chat-bubble code { background: #0a0a14; padding: 1px 5px; border-radius: 4px; }
+.lp-chat-bubble strong { color: #fff; }
+#lp-chat-input {
+    display: flex; gap: 8px; padding: 10px 12px;
+    background: #1a1a2e; border-top: 1px solid #2a2a4a; flex: 0 0 auto;
+}
+#lp-chat-msg {
+    flex: 1; resize: none; height: 44px;
+    background: #0f0f1a; color: #e0e0e0; border: 1px solid #2a2a4a;
+    border-radius: 8px; padding: 10px 12px; font-size: 14px;
+    font-family: inherit;
+}
+#lp-chat-send {
+    background: #2a8a5a; color: #fff; border: none;
+    padding: 0 20px; border-radius: 8px; cursor: pointer; font-weight: 600;
+}
+#lp-chat-send:disabled, #lp-chat-msg:disabled {
+    opacity: .5; cursor: not-allowed;
+}
+#lp-chat-status { font-style: italic; }
+.lp-chat-loading { color: #7bb3ff; }
 </style>
 """
 
@@ -263,6 +348,8 @@ def _wrap_lesson_html(
         f'    {_link(prev_url, "← Previous")}'
         f'    <span class="lp-position">Lesson {lesson_order} of {lesson_count}</span>'
         f'    {_link(next_url, "Next →")}'
+        f'    <button id="lp-teach-btn" type="button" aria-pressed="false">'
+        f'💬 Ask</button>'
         f'  </div>'
         f'</nav>'
     )
@@ -309,6 +396,25 @@ def _wrap_lesson_html(
     if body_match:
         pos = body_match.end()
         html = html[:pos] + "\n" + navbar + html[pos:]
+
+    # ── Injection 4: /teach chat pane before </body> ───────────────────────
+    teach_pane = (
+        '<div id="lp-chat" data-topic="%s" aria-hidden="true">'
+        '  <div id="lp-chat-head">'
+        '    <span>💬 Teach — %s</span>'
+        '    <span id="lp-chat-status"></span>'
+        '    <button id="lp-chat-close" type="button" aria-label="Close">✕</button>'
+        '  </div>'
+        '  <div id="lp-chat-log"></div>'
+        '  <div id="lp-chat-input">'
+        '    <textarea id="lp-chat-msg" placeholder="Ask about this lesson…" '
+        'disabled rows="1"></textarea>'
+        '    <button id="lp-chat-send" type="button" disabled>Send</button>'
+        '  </div>'
+        '</div>'
+        '<script src="/static/teach-chat.js" defer></script>'
+    ) % (topic_name, topic_title)
+    html = html.replace("</body>", teach_pane + "\n</body>")
 
     return html
 
@@ -459,3 +565,158 @@ async def health():
         "workspace_count": len(workspaces),
         "workspaces": [ws["title"] for ws in workspaces],
     }
+
+
+# ── In-lesson /teach chat pane ───────────────────────────────────────────────
+#
+# A WebSocket endpoint that proxies a browser chat pane to a topic-scoped,
+# stateful Hermes session. Each user message runs:
+#
+#     hermes chat --resume <topic-session> --skills teach -q "<message>"
+#
+# with the working directory set to the topic's workspace
+# (Learning/<topic>/). `--resume` keys off a stable, topic-derived session id,
+# so the conversation accumulates history in ~/.hermes/state.db and survives
+# portal restarts. The first message in a topic seeds the session with a
+# /teach continuation directive so the model is grounded in MISSIOn.md.
+
+# Session id prefix so these don't collide with CLI sessions.
+_SESSION_PREFIX = "learnportal-teach"
+
+# Slugs a topic name into something safe to use as a Hermes session id.
+def _topic_session_id(topic_name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]", "-", topic_name)
+    return f"{_SESSION_PREFIX}-{slug}"
+
+
+def _is_valid_topic(topic_name: str) -> bool:
+    """Topic must be a single path-safe segment mapping to an existing dir."""
+    # Guard against path traversal / absolute paths.
+    if not topic_name or topic_name in {".", ".."}:
+        return False
+    if re.search(r"[/\\]", topic_name):
+        return False
+    return (LEARNING_DIR / topic_name).is_dir()
+
+
+def _teach_bootstrap(topic_name: str) -> str:
+    """The directive prepended to the first message in a fresh session."""
+    return (
+        "You are in a /teach learning session for the topic at "
+        f"/mnt/data/Workspace/Learning/{topic_name}/. "
+        "Follow the teach skill: consult MISSION.md and the learning-records "
+        "to understand what this learner already knows, ground your teaching "
+        "in that workspace (do not invent files elsewhere), and work within "
+        "that directory. Continue their learning in their zone of proximal "
+        "development. Here is the learner's next message:"
+    )
+
+
+async def _run_teach(
+    topic_name: str, message: str, *, is_first: bool
+) -> tuple[int, str]:
+    """Run one hermes chat invocation for the topic.
+
+    Returns (exit_code, combined_stdout_stderr) once the process finishes.
+    The gate agent/approval config may cause longer runs; we let the portal's
+    default timeouts apply and stream nothing back here — the WebSocket handler
+    streams chunk-by-chunk instead.
+    """
+    session_id = _topic_session_id(topic_name)
+    workdir = LEARNING_DIR / topic_name
+
+    prompt = message
+    if is_first:
+        prompt = f"{_teach_bootstrap(topic_name)}\n\n{message}"
+
+    cmd = [
+        "/home/hermes-agent/.local/bin/hermes",
+        "chat",
+        "--resume", session_id,
+        "--skills", "teach",
+        "-q", prompt,
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(workdir),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env=_hermes_env(),
+    )
+    out: list[str] = []
+    assert proc.stdout is not None
+    while True:
+        chunk = await proc.stdout.read(256)
+        if not chunk:
+            break
+        out.append(chunk.decode("utf-8", "replace"))
+    await proc.wait()
+    return proc.returncode or 0, "".join(out)
+
+
+def _hermes_env():
+    """Environment for spawned hermes processes.
+
+    Pass through the current environment (which carries HERMES_HOME, PATH, and
+    the 9Router key via .env), and make sure HOME persists so ~/.hermes/state.db
+    resolves correctly.
+    """
+    import os as _os
+
+    env = dict(_os.environ)
+    env.setdefault("HOME", str(Path.home()))
+    return env
+
+
+@app.websocket("/chat/{topic_name}")
+async def chat_ws(websocket: WebSocket, topic_name: str):
+    """Bidirectionally proxy the /teach session for `topic_name`.
+
+    Browser sends user messages; we relay streamed assistant output back as
+    deltas. A fresh topic session is seeded on the first message.
+    """
+    if not _is_valid_topic(topic_name):
+        await websocket.close(code=4404)  # custom: topic not found
+        return
+
+    await websocket.accept()
+    first = True
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Simple JSON envelope: {"message": "..."}
+            import json as _json
+
+            try:
+                msg = _json.loads(data).get("message")
+            except Exception:
+                msg = data
+            if not msg or not msg.strip():
+                await websocket.send_text(
+                    _json.dumps({"error": "Empty message"})
+                )
+                continue
+
+            await websocket.send_text(_json.dumps({"status": "thinking"}))
+
+            code, full = await _run_teach(topic_name, msg.strip(), is_first=first)
+            first = False
+
+            if code == 0 and full.strip():
+                await websocket.send_text(
+                    _json.dumps({"delta": full, "done": True})
+                )
+            else:
+                await websocket.send_text(
+                    _json.dumps({"error": full.strip() or f"hermes exited {code}"})
+                )
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:  # noqa: BLE001 — report and close
+        try:
+            await websocket.send_text(
+                _json.dumps({"error": f"Internal error: {exc}"})
+            )
+        except Exception:
+            pass
